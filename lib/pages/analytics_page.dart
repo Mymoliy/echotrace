@@ -13,6 +13,7 @@ import '../providers/app_state.dart';
 import '../services/analytics_service.dart';
 import '../services/database_service.dart';
 import '../services/analytics_cache_service.dart';
+import '../services/annual_report_cache_service.dart';
 import '../services/dual_report_cache_service.dart';
 import '../services/dual_report_service.dart';
 import '../services/logger_service.dart';
@@ -50,6 +51,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
   bool _showAnnualReportSubPage = false;
   bool _showDualReportSubPage = false;
   String _contactSearchQuery = '';
+  Set<String> _excludedUsernames = {};
 
   bool get _isSubPage => _showAnnualReportSubPage || _showDualReportSubPage;
 
@@ -103,6 +105,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
     }
 
     await logger.debug('AnalyticsPage', '数据库已连接，开始加载数据');
+    await _ensureExcludedUsernames();
 
     if (!mounted) return;
     setState(() {
@@ -144,6 +147,20 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
         await logger.debug('AnalyticsPage', '检查数据库是否变化');
         final dbChanged = await cacheService.isDatabaseChanged(dbModifiedTime);
         await logger.debug('AnalyticsPage', '数据库已变化: $dbChanged');
+        final cachedExcluded =
+            (cachedData['excludedUsernames'] as List?)
+                ?.map((e) => e.toString().toLowerCase())
+                .toSet() ??
+            <String>{};
+        final excludedChanged =
+            !_setEquals(cachedExcluded, _excludedUsernames);
+
+        if (excludedChanged) {
+          await logger.info('AnalyticsPage', '排除名单变化，准备重新分析');
+          if (!mounted) return;
+          await _performAnalysis(dbModifiedTime);
+          return;
+        }
 
         if (dbChanged) {
           // 数据库已变化，询问用户
@@ -211,9 +228,54 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
     }
   }
 
+  bool _setEquals(Set<String> a, Set<String> b) {
+    return a.length == b.length && a.containsAll(b);
+  }
+
+  Future<void> _ensureExcludedUsernames() async {
+    final appState = context.read<AppState>();
+    final hasStored =
+        await appState.configService.hasAnalyticsExcludedUsernames();
+    final stored =
+        await appState.configService.getAnalyticsExcludedUsernames();
+
+    final normalized = stored
+        .map((name) => name.trim().toLowerCase())
+        .where((name) => name.isNotEmpty)
+        .toSet();
+
+    if (!hasStored) {
+      normalized.add('filehelper');
+      final myWxid =
+          widget.databaseService.currentAccountWxid ??
+          await appState.configService.getManualWxid();
+      if (myWxid != null && myWxid.isNotEmpty) {
+        normalized.add(myWxid.toLowerCase());
+      }
+    }
+
+    if (!_setEquals(_excludedUsernames, normalized)) {
+      _excludedUsernames = normalized;
+      _analyticsService = AnalyticsService(
+        widget.databaseService,
+        excludedUsernames: _excludedUsernames,
+      );
+      await appState.configService.saveAnalyticsExcludedUsernames(
+        _excludedUsernames.toList(),
+      );
+      if (mounted) {
+        setState(() {});
+      }
+    }
+  }
+
   Future<void> _performAnalysis(int dbModifiedTime) async {
     await logger.debug('AnalyticsPage', '========== 开始执行数据分析 ==========');
     final cacheService = AnalyticsCacheService.instance;
+    _analyticsService = AnalyticsService(
+      widget.databaseService,
+      excludedUsernames: _excludedUsernames,
+    );
 
     if (!mounted) return;
     setState(() => _loadingStatus = '正在分析所有私聊数据...');
@@ -249,6 +311,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
     await cacheService.saveBasicAnalytics(
       overallStats: _overallStats,
       contactRankings: rankings,
+      excludedUsernames: _excludedUsernames.toList(),
       dbModifiedTime: dbModifiedTime,
     );
     await logger.debug('AnalyticsPage', '缓存保存完成');
@@ -407,6 +470,184 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
     return rankings;
   }
 
+  Future<void> _showExcludeFriendsDialog() async {
+    if (!widget.databaseService.isConnected) {
+      await logger.warning('AnalyticsPage', '数据库未连接，无法编辑排除名单');
+      return;
+    }
+
+    final sessions = await widget.databaseService.getSessions();
+    final privateSessions = sessions
+        .where(
+          (s) =>
+              !s.isGroup &&
+              !_excludedUsernames.contains(s.username.toLowerCase()),
+        )
+        .toList();
+    final usernames =
+        privateSessions.map((s) => s.username).where((u) => u.isNotEmpty).toSet();
+    usernames.addAll(_excludedUsernames);
+    final displayNames = await widget.databaseService.getDisplayNames(
+      usernames.toList(),
+    );
+
+    final myWxid =
+        widget.databaseService.currentAccountWxid ??
+        await context.read<AppState>().configService.getManualWxid();
+    if (myWxid != null && myWxid.isNotEmpty) {
+      usernames.add(myWxid);
+    }
+    usernames.add('filehelper');
+
+    final entries = usernames
+        .map((username) {
+          final lower = username.toLowerCase();
+          final displayName =
+              lower == 'filehelper'
+                  ? '文件传输助手'
+                  : (displayNames[username] ?? username);
+          return _ExcludeFriendEntry(
+            username: username,
+            displayName: displayName,
+          );
+        })
+        .toList();
+
+    final selected = Set<String>.from(_excludedUsernames);
+    String searchQuery = '';
+
+    final result = await showDialog<Set<String>>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final visibleEntries = (searchQuery.isEmpty
+                    ? entries
+                    : entries
+                        .where((entry) {
+                          final haystack =
+                              '${entry.displayName.toLowerCase()} ${entry.username.toLowerCase()}';
+                          return haystack.contains(searchQuery);
+                        })
+                        .toList())
+              ..sort((a, b) {
+                final aSelected = selected.contains(a.username.toLowerCase());
+                final bSelected = selected.contains(b.username.toLowerCase());
+                if (aSelected != bSelected) {
+                  return aSelected ? -1 : 1;
+                }
+                return a.displayName.compareTo(b.displayName);
+              });
+            return AlertDialog(
+              title: const Text('选择不统计的好友'),
+              content: SizedBox(
+                width: 460,
+                height: 480,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      decoration: const InputDecoration(
+                        hintText: '搜索好友',
+                        prefixIcon: Icon(Icons.search),
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (value) {
+                        setDialogState(
+                          () => searchQuery = value.trim().toLowerCase(),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: visibleEntries.length,
+                        itemBuilder: (context, index) {
+                          final entry = visibleEntries[index];
+                          final lower = entry.username.toLowerCase();
+                          final isChecked = selected.contains(lower);
+                          return CheckboxListTile(
+                            value: isChecked,
+                            onChanged: (checked) {
+                              setDialogState(() {
+                                if (checked == true) {
+                                  selected.add(lower);
+                                } else {
+                                  selected.remove(lower);
+                                }
+                              });
+                            },
+                            title: Text(entry.displayName),
+                            subtitle: Text(entry.username),
+                            dense: true,
+                            controlAffinity: ListTileControlAffinity.leading,
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('取消'),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(context, selected),
+                  child: const Text('应用'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result == null) return;
+
+    final appState = context.read<AppState>();
+    await appState.configService.saveAnalyticsExcludedUsernames(
+      result.toList(),
+    );
+    _excludedUsernames = result;
+    _analyticsService = AnalyticsService(
+      widget.databaseService,
+      excludedUsernames: _excludedUsernames,
+    );
+
+    await AnalyticsCacheService.instance.clearBasicCache();
+    await AnnualReportCacheService.clearAllReports();
+
+    final dbPath = widget.databaseService.dbPath;
+    int? dbModifiedTime;
+    if (dbPath != null) {
+      final dbFile = File(dbPath);
+      if (await dbFile.exists()) {
+        final stat = await dbFile.stat();
+        dbModifiedTime = stat.modified.millisecondsSinceEpoch;
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isLoading = true;
+      _loadingStatus = '正在更新排除名单...';
+    });
+    try {
+      await _performAnalysis(
+        dbModifiedTime ?? DateTime.now().millisecondsSinceEpoch,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -426,6 +667,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
                   : _showAnnualReportSubPage
                       ? _AnnualReportSubPage(
                           databaseService: widget.databaseService,
+                          excludedUsernames: _excludedUsernames,
                           onClose: () {
                             setState(() => _showAnnualReportSubPage = false);
                           },
@@ -497,10 +739,26 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
           ),
           const Spacer(),
           if (!_isSubPage && !_isLoading)
-            IconButton(
-              icon: const Icon(Icons.refresh),
-              onPressed: _loadData,
-              tooltip: '刷新数据',
+            Row(
+              children: [
+                OutlinedButton(
+                  onPressed: _showExcludeFriendsDialog,
+                  style: OutlinedButton.styleFrom(
+                    shape: const StadiumBorder(),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
+                  ),
+                  child: const Text('选择不统计的好友'),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.refresh),
+                  onPressed: _loadData,
+                  tooltip: '刷新数据',
+                ),
+              ],
             ),
         ],
       ),
@@ -913,7 +1171,13 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
       return const SizedBox.shrink();
     }
 
-    final allRankings = _allContactRankings ?? _contactRankings ?? [];
+    final allRankings =
+        (_allContactRankings ?? _contactRankings ?? [])
+            .where(
+              (ranking) =>
+                  !_excludedUsernames.contains(ranking.username.toLowerCase()),
+            )
+            .toList();
     final query = _contactSearchQuery.trim().toLowerCase();
     final visibleRankings = query.isEmpty
         ? allRankings.take(_topN).toList()
@@ -1152,10 +1416,13 @@ class _AvatarWithRank extends StatelessWidget {
 
 class _AnnualReportSubPage extends StatefulWidget {
   final DatabaseService databaseService;
+  final Set<String> excludedUsernames;
   final VoidCallback onClose;
 
   const _AnnualReportSubPage({
+    super.key,
     required this.databaseService,
+    required this.excludedUsernames,
     required this.onClose,
   });
 
@@ -1406,8 +1673,16 @@ class _AnnualReportSubPageState extends State<_AnnualReportSubPage> {
       onBeforeGenerate: _ensureYearSelection,
       showAppBar: false,
       onClose: widget.onClose,
+      excludedUsernames: widget.excludedUsernames,
     );
   }
+}
+
+class _ExcludeFriendEntry {
+  final String username;
+  final String displayName;
+
+  _ExcludeFriendEntry({required this.username, required this.displayName});
 }
 
 class _DualReportSubPage extends StatefulWidget {
