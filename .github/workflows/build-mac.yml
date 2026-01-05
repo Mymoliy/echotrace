@@ -22,19 +22,25 @@ jobs:
       - name: 开启 macOS 平台支持
         run: flutter config --enable-macos-desktop
 
-      - name: 强制清理并重置签名配置
+      - name: 深度重写 Xcode 签名配置 (核心修复)
         run: |
-          # 修正 sed 处理目录的问题，直接针对配置文件修改
+          # 针对所有的 project.pbxproj 文件进行彻底修改
           find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGN_STYLE = Automatic/CODE_SIGN_STYLE = Manual/g' {} +
           find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGNING_REQUIRED = YES/CODE_SIGNING_REQUIRED = NO/g' {} +
           find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGNING_ALLOWED = YES/CODE_SIGNING_ALLOWED = NO/g' {} +
-          # 移除可能存在的开发团队信息
-          find . -name "project.pbxproj" -exec sed -i '' 's/DEVELOPMENT_TEAM = [^;]*;//g' {} +
+          find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGN_IDENTITY = "Apple Development"/CODE_SIGN_IDENTITY = "-"/g' {} +
+          find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGN_IDENTITY = "iPhone Developer"/CODE_SIGN_IDENTITY = "-"/g' {} +
+          # 强制将所有签名标识符改为 Ad-hoc (-)
+          find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGN_IDENTITY = "[^"]*"/CODE_SIGN_IDENTITY = "-"/g' {} +
 
       - name: 执行构建 (Release)
         run: |
-          # 关键：使用 --code-sign-identity "-" 赋予一个临时签名，让 zstd.framework 能够通过编译
-          flutter build macos --release --code-sign-identity "-" --development-team ""
+          # 不再携带报错的参数，只运行最基础的构建命令
+          flutter build macos --release
+        env:
+          # 通过环境变量再次兜底
+          CODE_SIGNING_ALLOWED: NO
+          CODE_SIGNING_REQUIRED: NO
 
       - name: 打包成 ZIP
         run: |
