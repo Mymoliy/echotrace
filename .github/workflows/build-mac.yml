@@ -1,61 +1,34 @@
-name: macOS 构建任务
-
-on:
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: macos-latest
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 配置 Flutter 环境
-        uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-          cache: true
-
-      - name: 安装依赖
-        run: flutter pub get
-
-      - name: 开启 macOS 平台支持
-        run: flutter config --enable-macos-desktop
-
-      - name: 预处理 Xcode 签名配置
+- name: 执行构建并手动签名 (彻底修复版)
         run: |
-          find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGN_STYLE = Automatic/CODE_SIGN_STYLE = Manual/g' {} +
-          find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGNING_REQUIRED = YES/CODE_SIGNING_REQUIRED = NO/g' {} +
-          find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGNING_ALLOWED = YES/CODE_SIGNING_ALLOWED = NO/g' {} +
-
-      - name: 执行构建并手动签名 (核心修复)
-        run: |
-          # 1. 尝试构建。如果因为签名报错，我们忽略错误继续，因为文件可能已经生成了一部分
+          # 1. 尝试初始构建，生成必要文件
           flutter build macos --release || true
           
-          # 2. 手动对生成的 app 及其所有 Framework 进行本地签名
-          # 这一步修复你遇到的 "zstd.framework" 签名错误
+          # 2. 定位 App 路径
           APP_PATH="build/macos/Build/Products/Release/echotrace.app"
+          
           if [ -d "$APP_PATH" ]; then
-            echo "正在对 Frameworks 进行手动签名..."
-            find "$APP_PATH/Contents/Frameworks" -name "*.framework" -exec codesign --force --deep --sign - {} \;
-            echo "正在对主程序进行手动签名..."
-            codesign --force --deep --sign - "$APP_PATH"
+            echo "正在修复权限并清除现有签名..."
+            # 清除所有可能导致冲突的旧签名
+            find "$APP_PATH" -name "_CodeSignature" -exec rm -rf {} +
+            
+            echo "正在对内部 Frameworks 进行逐个签名..."
+            # 先给嵌套的最深层组件签名，解决 bundle format is ambiguous 错误
+            find "$APP_PATH/Contents/Frameworks" -type d -name "*.framework" -exec codesign --force --sign - --timestamp=none {} \;
+            
+            echo "正在对可执行文件进行签名..."
+            # 给内部的动态库签名
+            find "$APP_PATH/Contents/Frameworks" -type f -name "*.dylib" -exec codesign --force --sign - --timestamp=none {} \;
+            
+            echo "正在对主程序包进行整体签名..."
+            # 最后对整个 Bundle 签名
+            codesign --force --sign - --timestamp=none "$APP_PATH"
+          else
+            echo "错误：未找到构建产物，请检查前面的编译日志。"
+            exit 1
           fi
           
-          # 3. 再次运行构建确认最终生成
+          # 3. 最终确认构建
           flutter build macos --release
         env:
           CODE_SIGNING_ALLOWED: NO
           CODE_SIGNING_REQUIRED: NO
-
-      - name: 打包成 ZIP
-        run: |
-          cd build/macos/Build/Products/Release
-          zip -r echotrace-mac.zip echotrace.app
-
-      - name: 上传文件
-        uses: actions/upload-artifact@v4
-        with:
-          name: EchoTrace-MacOS-Build
-          path: build/macos/Build/Products/Release/echotrace-mac.zip
