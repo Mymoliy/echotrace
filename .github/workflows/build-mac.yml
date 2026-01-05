@@ -22,21 +22,19 @@ jobs:
       - name: 开启 macOS 平台支持
         run: flutter config --enable-macos-desktop
 
-      - name: 禁用代码签名限制 (修正版)
+      - name: 强制清理并重置签名配置
         run: |
-          # 针对 Xcode 的 project.pbxproj 实际文件进行修改
+          # 修正 sed 处理目录的问题，直接针对配置文件修改
           find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGN_STYLE = Automatic/CODE_SIGN_STYLE = Manual/g' {} +
           find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGNING_REQUIRED = YES/CODE_SIGNING_REQUIRED = NO/g' {} +
           find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGNING_ALLOWED = YES/CODE_SIGNING_ALLOWED = NO/g' {} +
+          # 移除可能存在的开发团队信息
+          find . -name "project.pbxproj" -exec sed -i '' 's/DEVELOPMENT_TEAM = [^;]*;//g' {} +
 
       - name: 执行构建 (Release)
         run: |
-          flutter build macos --release
-        env:
-          CODE_SIGNING_ALLOWED: NO
-          CODE_SIGNING_REQUIRED: NO
-          CODE_SIGN_ENTITLEMENTS: ""
-          CODE_SIGNING_METHOD: manual
+          # 关键：使用 --code-sign-identity "-" 赋予一个临时签名，让 zstd.framework 能够通过编译
+          flutter build macos --release --code-sign-identity "-" --development-team ""
 
       - name: 打包成 ZIP
         run: |
