@@ -1,7 +1,7 @@
 name: macOS 构建任务
 
 on:
-  workflow_dispatch: # 允许手动点击按钮开始构建
+  workflow_dispatch:
 
 jobs:
   build:
@@ -22,16 +22,15 @@ jobs:
       - name: 开启 macOS 平台支持
         run: flutter config --enable-macos-desktop
 
-      - name: 禁用代码签名限制 (关键步骤)
+      - name: 禁用代码签名限制 (修正版)
         run: |
-          # 遍历并修改所有 Xcode 项目文件，强制关闭签名需求
-          find . -name "*.xcodeproj" -exec sed -i '' 's/CODE_SIGN_STYLE = Automatic/CODE_SIGN_STYLE = Manual/g' {} +
-          find . -name "*.xcodeproj" -exec sed -i '' 's/CODE_SIGNING_REQUIRED = YES/CODE_SIGNING_REQUIRED = NO/g' {} +
-          find . -name "*.xcodeproj" -exec sed -i '' 's/CODE_SIGNING_ALLOWED = YES/CODE_SIGNING_ALLOWED = NO/g' {} +
+          # 针对 Xcode 的 project.pbxproj 实际文件进行修改
+          find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGN_STYLE = Automatic/CODE_SIGN_STYLE = Manual/g' {} +
+          find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGNING_REQUIRED = YES/CODE_SIGNING_REQUIRED = NO/g' {} +
+          find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGNING_ALLOWED = YES/CODE_SIGNING_ALLOWED = NO/g' {} +
 
       - name: 执行构建 (Release)
         run: |
-          # 正常执行构建，但通过环境变量封杀签名操作
           flutter build macos --release
         env:
           CODE_SIGNING_ALLOWED: NO
