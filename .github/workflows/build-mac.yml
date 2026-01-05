@@ -22,23 +22,30 @@ jobs:
       - name: 开启 macOS 平台支持
         run: flutter config --enable-macos-desktop
 
-      - name: 深度重写 Xcode 签名配置 (核心修复)
+      - name: 预处理 Xcode 签名配置
         run: |
-          # 针对所有的 project.pbxproj 文件进行彻底修改
           find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGN_STYLE = Automatic/CODE_SIGN_STYLE = Manual/g' {} +
           find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGNING_REQUIRED = YES/CODE_SIGNING_REQUIRED = NO/g' {} +
           find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGNING_ALLOWED = YES/CODE_SIGNING_ALLOWED = NO/g' {} +
-          find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGN_IDENTITY = "Apple Development"/CODE_SIGN_IDENTITY = "-"/g' {} +
-          find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGN_IDENTITY = "iPhone Developer"/CODE_SIGN_IDENTITY = "-"/g' {} +
-          # 强制将所有签名标识符改为 Ad-hoc (-)
-          find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGN_IDENTITY = "[^"]*"/CODE_SIGN_IDENTITY = "-"/g' {} +
 
-      - name: 执行构建 (Release)
+      - name: 执行构建并手动签名 (核心修复)
         run: |
-          # 不再携带报错的参数，只运行最基础的构建命令
+          # 1. 尝试构建。如果因为签名报错，我们忽略错误继续，因为文件可能已经生成了一部分
+          flutter build macos --release || true
+          
+          # 2. 手动对生成的 app 及其所有 Framework 进行本地签名
+          # 这一步修复你遇到的 "zstd.framework" 签名错误
+          APP_PATH="build/macos/Build/Products/Release/echotrace.app"
+          if [ -d "$APP_PATH" ]; then
+            echo "正在对 Frameworks 进行手动签名..."
+            find "$APP_PATH/Contents/Frameworks" -name "*.framework" -exec codesign --force --deep --sign - {} \;
+            echo "正在对主程序进行手动签名..."
+            codesign --force --deep --sign - "$APP_PATH"
+          fi
+          
+          # 3. 再次运行构建确认最终生成
           flutter build macos --release
         env:
-          # 通过环境变量再次兜底
           CODE_SIGNING_ALLOWED: NO
           CODE_SIGNING_REQUIRED: NO
 
