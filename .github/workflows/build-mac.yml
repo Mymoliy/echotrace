@@ -1,0 +1,37 @@
+name: macOS 构建任务
+
+on:
+  workflow_dispatch: # 允许我们手动点击按钮开始构建
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Flutter 环境
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: 安装依赖
+        run: flutter pub get
+
+      - name: 开启 macOS 平台支持
+        run: flutter config --enable-macos-desktop
+
+      - name: 执行构建 (Release)
+        run: flutter build macos --release --no-codesign
+
+      - name: 打包成 ZIP
+        run: |
+          cd build/macos/Build/Products/Release
+          zip -r echotrace-mac.zip echotrace.app
+
+      - name: 上传文件
+        uses: actions/upload-artifact@v4
+        with:
+          name: EchoTrace-MacOS-Build
+          path: build/macos/Build/Products/Release/echotrace-mac.zip
