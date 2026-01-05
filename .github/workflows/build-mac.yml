@@ -23,7 +23,8 @@ jobs:
         run: flutter config --enable-macos-desktop
 
       - name: 执行构建 (Release)
-        run: flutter build macos --release
+        run: # 使用环境变量强制跳过代码签名
+          flutter build macos --release --code-sign-identity "-" --development-team ""
 
       - name: 打包成 ZIP
         run: |
