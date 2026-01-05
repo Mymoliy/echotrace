@@ -23,7 +23,7 @@ jobs:
         run: flutter config --enable-macos-desktop
 
       - name: 执行构建 (Release)
-        run: flutter build macos --release --no-codesign
+        run: flutter build macos --release
 
       - name: 打包成 ZIP
         run: |
