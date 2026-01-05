@@ -23,9 +23,15 @@ jobs:
         run: flutter config --enable-macos-desktop
 
       - name: 执行构建 (Release)
-        run: # 使用环境变量强制跳过代码签名
-          flutter build macos --release --code-sign-identity "-" --development-team ""
-
+        run: |
+          # 通过环境变量告诉 Xcode 编译器：不要签名，不要验证，直接编译
+          flutter build macos --release --export-options-plist=macos/Runner/Configs/ExportOptions.plist || \
+          flutter build macos --release
+        env:
+          CODE_SIGNING_ALLOWED: NO
+          CODE_SIGNING_REQUIRED: NO
+          CODE_SIGN_ENTITLEMENTS: ""
+          CODE_SIGNING_METHOD: manual
       - name: 打包成 ZIP
         run: |
           cd build/macos/Build/Products/Release
